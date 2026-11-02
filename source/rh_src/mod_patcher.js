@@ -17,7 +17,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { PatchError, resolveCtx } = require('./rh_resolve.js');
 
-const MOD_VERSION = 'v3.22';
+const MOD_VERSION = 'v3.23';
 
 function log(m) { console.log('[PATCHER] ' + m); }
 function sha256(buf) { return crypto.createHash('sha256').update(buf).digest('hex'); }

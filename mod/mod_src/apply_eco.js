@@ -13,7 +13,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { PatchError, expectOne } = require('./rh_resolve.js');
+const { PatchError, expectOne, modeOf } = require('./rh_resolve.js');
 
 const PATCH = '生态打理';
 
@@ -77,29 +77,56 @@ function patch({ src, log }) {
   }
 
   // ---------- 3. 放蛋（孵化）函数 + 蛋映射 ----------
-  // 形态：function X(t,e,n){const s=Vi(t),r=ef(e);return r?{...s,pendingHatches:[...]}:null}
-  function resolveHatch(s, viName) {
+  // v3.22 及以前形态：function X(t,e,n){const s=Vi(t),r=ef(e);return r?{...s,pendingHatches:[...]}:null}
+  function resolveHatchV1(s, viName) {
     const loose = new RegExp('function ([\\w$]+)\\([\\w$]+,[\\w$]+,[\\w$]+\\)\\{[\\s\\S]{0,260}?' + viName.replace(/\$/g, '\\$&') +
       '\\([\\w$]+\\)[\\s\\S]{0,120}?pendingHatches');
     const mm = loose.exec(s);
     if (!mm) return null;
     const body = s.slice(mm.index, mm.index + 600);
-    const eggMap = /,[\w$]+=([\w$]+)\([\w$]+\);return/.exec(body);
+    const eggMap = /,[\\w$]+=([\\w$]+)\\([\\w$]+\\);return/.exec(body);
     return { fn: mm[1], eggMap: eggMap ? eggMap[1] : null };
   }
-  const hatch = resolveHatch(src, sym['__RH_FN_INCUB__']);
-  if (!hatch || !hatch.fn || !hatch.eggMap) {
-    throw new PatchError(PATCH, '放蛋(孵化)函数/蛋映射', 'pendingHatches 形态解析失败', [{ desc: 'pendingHatches', re: /pendingHatches/, src }]);
+  // v2 形态（2026-11 大更新起）：放蛋逻辑并入 normalizeIncubatorState（签名变 (state, eggId, day)
+  // → 新 state 或假值，与注入体调用约定完全一致）；蛋映射改为 useMemo Map 合并形态、不再有
+  // 独立判蛋函数 → v2 模式以 normalizeIncubatorState 为放蛋函数，判蛋用注入体内置 `*_egg` 规则。
+  const hatchV1 = resolveHatchV1(src, sym['__RH_FN_INCUB__']);
+  let ecoMode = 'v1';
+  if (!hatchV1 || !hatchV1.fn || !hatchV1.eggMap) {
+    const v2shape = /pendingHatches(\?\?\[|\?\.\[)/.test(src);
+    if (v2shape) {
+      ecoMode = 'v2';
+      log('检测到新版生态形态（pendingHatches 新写法），启用 v2 兼容模式');
+    } else {
+      throw new PatchError(PATCH, '放蛋(孵化)函数/蛋映射', 'pendingHatches 形态解析失败', [{ desc: 'pendingHatches', re: /pendingHatches/, src }]);
+    }
   }
-  sym['__RH_FN_HATCH__'] = hatch.fn;
-  sym['__RH_FN_EGGMAP__'] = hatch.eggMap;
+  if (ecoMode === 'v1') {
+    sym['__RH_FN_HATCH__'] = hatchV1.fn;
+    sym['__RH_FN_EGGMAP__'] = hatchV1.eggMap;
+  } else {
+    sym['__RH_FN_HATCH__'] = keys['normalizeIncubatorState'];
+  }
 
   // ---------- 4. 动物配置对象（xo）：从 placeAnimal 函数体里取 ----------
-  const pi = src.indexOf('function ' + sym['__RH_FN_PLACE__'] + '(');
-  const placeBody = src.slice(pi, pi + 400);
-  const cfgMatch = /!([\w$]+)\[[\w$]+\]/.exec(placeBody);
-  if (!cfgMatch) throw new PatchError(PATCH, '动物配置对象', 'placeAnimal 函数体内未找到 `!X[Y]`', [{ desc: 'placeAnimal 函数体', re: /function /, src }]);
-  sym['__RH_FN_ANIMALCFG__'] = cfgMatch[1];
+  function resolveAnimalCfg(s, placeFn) {
+    const pi = s.indexOf('function ' + placeFn + '(');
+    if (pi < 0) return null;
+    const body = s.slice(pi, pi + 400);
+    const cfgMatch = /!([\w$]+)\[[\w$]+\]/.exec(body);
+    return cfgMatch ? cfgMatch[1] : null;
+  }
+  if (ecoMode === 'v1') {
+    const animalCfg = resolveAnimalCfg(src, sym['__RH_FN_PLACE__']);
+    if (!animalCfg) {
+      throw new PatchError(PATCH, '动物配置对象', 'placeAnimal 函数体内未找到 `!X[Y]`', [{ desc: 'placeAnimal 函数体', re: /function /, src }]);
+    }
+    sym['__RH_FN_ANIMALCFG__'] = animalCfg;
+  } else {
+    if (!keys['ITEMS']) throw new PatchError(PATCH, '动物配置对象', 'ITEMS 键未找到（v2）', [{ desc: 'ITEMS', re: /ITEMS:/, src }]);
+    sym['__RH_FN_ITEMS__'] = keys['ITEMS'];
+    log('v2 动物判定改用 ITEMS 表 (' + keys['ITEMS'] + ')，判据 Qe[d]?.animalConfig');
+  }
 
   // ---------- 5. 宰杀函数（含 raw_chicken 产物映射、函数头 (list,id)） ----------
   function resolveSlaughter(s) {
@@ -114,13 +141,19 @@ function patch({ src, log }) {
     }
     return found;
   }
-  const fnSlaughter = resolveSlaughter(src);
+  let fnSlaughter = null;
+  if (ecoMode === 'v1') {
+    fnSlaughter = resolveSlaughter(src);
+  } else {
+    fnSlaughter = keys['slaughterAnimal'] || null;
+    log('v2 宰杀函数改用 slaughterAnimal 键 (' + fnSlaughter + ')');
+  }
   if (!fnSlaughter) {
-    throw new PatchError(PATCH, '宰杀函数', 'raw_chicken/isMature 形态解析失败', [{ desc: 'raw_chicken', re: /raw_chicken/, src }]);
+    throw new PatchError(PATCH, '宰杀函数', (ecoMode === 'v1' ? 'raw_chicken/isMature 形态解析失败' : 'slaughterAnimal 键缺失'), [{ desc: 'raw_chicken', re: /raw_chicken/, src }]);
   }
   sym['__RH_FN_SLAUGHTER__'] = fnSlaughter;
 
-  // ---------- 6. 菜谱函数（形如 const A=(dev.level||0)+1,B=FN(A)） ----------
+  // ---------- 6. 菜谱函数（v1：const A=(dev.level||0)+1,B=FN(A)；v2：FN((X.level||0)+1) 调用形态） ----------
   function resolveRecipes(s) {
     const re = /const\s+(\w+)=\((\w+)\.level\|\|0\)\+1,\w+=([\w$]+)\(\1\)/g;
     const seen = {};
@@ -130,16 +163,21 @@ function patch({ src, log }) {
     for (const k of Object.keys(seen)) { if (seen[k] > best) { best = seen[k]; found = k; } }
     return found;
   }
-  const fnRecipes = resolveRecipes(src);
+  let fnRecipes = null;
+  if (ecoMode === 'v1') {
+    fnRecipes = resolveRecipes(src);
+  } else {
+    const rc = modeOf(src, /([A-Za-z_$][\w$]*)\(\([\w$]*\.level\|\|0\)\+1\)/g, 1);
+    fnRecipes = rc.name || null;
+    log('v2 菜谱函数形态（FN((X.level||0)+1)）: ' + (rc.name || '未找到') + ' 命中' + rc.count + '次');
+  }
   if (!fnRecipes) {
-    throw new PatchError(PATCH, '菜谱函数', '未找到 `const A=(X.level||0)+1,B=FN(A)` 形态', []);
+    throw new PatchError(PATCH, '菜谱函数', (ecoMode === 'v1' ? '未找到 `const A=(X.level||0)+1,B=FN(A)` 形态' : 'FN((X.level||0)+1) 形态未找到'), []);
   }
   sym['__RH_FN_RECIPES__'] = fnRecipes;
 
-  log('符号 ' + Object.keys(sym).map(k => k.replace('__RH_FN_', '').replace('__', '') + '=' + sym[k]).join('  '));
-
   // ---------- 7. 注入 ----------
-  const injectRaw = fs.readFileSync(path.join(__dirname, 'eco_inject.js'), 'utf8').trim();
+  const injectRaw = fs.readFileSync(path.join(__dirname, ecoMode === 'v2' ? 'eco_inject.v2.js' : 'eco_inject.js'), 'utf8').trim();
   let inject = injectRaw;
   for (const ph of Object.keys(sym)) inject = inject.split(ph).join(sym[ph]);
   if (inject.indexOf('__RH_FN_') >= 0) {
