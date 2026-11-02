@@ -23,15 +23,15 @@ jobs:
       - name: 测试 · 生态仿真（29 断言）
         run: node source/sim_test.js
 
-      - name: 测试 · JS 语法 + 注入体占位符残留
+      - name: 测试 · JS 语法 + 注入体模板完整性
         run: |
           set -e
           for f in $(find source/rh_src mod/mod_src -name '*.js'); do node --check "$f"; done
-          if grep -rl "__RH_FN_" mod/mod_src/eco_inject.js mod/mod_src/eco_inject.v2.js; then
-            echo "❌ 注入体存在未替换占位符"
-            exit 1
-          fi
-          echo "✅ 全部检查通过"
+          grep -q '__RH_FN_HATCH__' mod/mod_src/eco_inject.js              # v1 模板含放蛋占位符
+          grep -q '__RH_FN_HATCH__' mod/mod_src/eco_inject.v2.js           # v2 模板含放蛋占位符
+          grep -q 'function __RH_IS_EGG__' mod/mod_src/eco_inject.v2.js    # v2 内置判蛋存在
+          grep -q 'var st0 = dev.incubatorState;' mod/mod_src/eco_inject.v2.js  # v2 直取孵化器状态
+          echo '✅ 语法与模板检查通过'
 
       - name: 构建分发包
         run: |
