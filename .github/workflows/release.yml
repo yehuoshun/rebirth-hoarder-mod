@@ -1,0 +1,60 @@
+name: 构建并发布
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 读取 MOD 版本
+        id: ver
+        run: |
+          VER=$(grep -oP "MOD_VERSION = '\K[^']+" mod/mod_src/mod_patcher.js)
+          echo "MOD_VERSION=$VER" | tee -a "$GITHUB_OUTPUT"
+
+      - name: 测试 · 生态仿真（29 断言）
+        run: node source/sim_test.js
+
+      - name: 测试 · JS 语法 + 注入体占位符残留
+        run: |
+          set -e
+          for f in $(find source/rh_src mod/mod_src -name '*.js'); do node --check "$f"; done
+          if grep -rl "__RH_FN_" mod/mod_src/eco_inject.js mod/mod_src/eco_inject.v2.js; then
+            echo "❌ 注入体存在未替换占位符"
+            exit 1
+          fi
+          echo "✅ 全部检查通过"
+
+      - name: 构建分发包
+        run: |
+          python3 source/make_zip2.py mod/ "末世房车MOD-${{ steps.ver.outputs.MOD_VERSION }}.zip"
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.MOD_VERSION }}
+          name: MOD ${{ steps.ver.outputs.MOD_VERSION }}（自动适配版）
+          body: |
+            由 GitHub Actions 自动构建发布（fork 自 thus1235/rebirth-hoarder-mod）。
+
+            ## 本轮更新（v3.23）
+            - 适配 2026-11 游戏大更新（app.asar 5GB / 生态逻辑模块化）
+            - apply_eco 生态补丁双通道解析（v1 旧形态兼容 + v2 新形态自动分流）
+            - 放蛋/宰杀/烹饪/放动物 新版符号自动解析 + 内置判蛋兜底
+            - 本地验证：AC 校验 4/4 · v2 专项 6/6 · 3.2MB 整文件语法 OK · zip 端到端 OK
+
+            ## 安装
+            1. 完全关闭游戏
+            2. 解压 → 双击「安装MOD.bat」（自动定位游戏目录，现场解包语义适配）
+            3. 启动游戏 → 废墟探索中按 F8
+
+            还原原版：双击「还原MOD.bat」。仅供个人单机体验。
+          files: 末世房车MOD-${{ steps.ver.outputs.MOD_VERSION }}.zip
